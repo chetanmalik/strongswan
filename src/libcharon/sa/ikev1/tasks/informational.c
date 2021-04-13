@@ -14,6 +14,8 @@
  */
 
 #include "informational.h"
+#include <sys/sysinfo.h>
+#include <time.h>
 
 #include <daemon.h>
 #include <sa/ikev1/tasks/isakmp_delete.h>
@@ -78,6 +80,61 @@ METHOD(task_t, build_i, status_t,
 	return SUCCESS;
 }
 
+#define ESP_CMD_BUFFER_SIZE 128
+#define ESP_ERROR_LOG_FILE "/var/log/sswan_err.log"
+
+/*****************************************************************************
+ *  FUNCTION NAME: log_esp_err
+ *
+ *  DESCRIPTION: This function is invoked when an ESP notify error occurs in 
+ *        tunnel establishment. The error will be logged in 
+ *        /var/log/sswan_err.log file. 
+ *
+ *        The entry in the file will be
+ *        Time(Epoch),Uptime,ESP-SPI,Event Type,IKE Tunnel name,IKE-SPI 
+ ****************************************************************************/
+static void log_esp_err( private_informational_t *this, notify_payload_t *notify,
+	       	notify_type_t type)
+{
+        char cmd_buf[ESP_CMD_BUFFER_SIZE] =  {0};
+        char err_data[ESP_CMD_BUFFER_SIZE] = {0};
+	struct sysinfo s_info;
+	int error = 0;
+	uint64_t initiator_spi = 0;
+	ike_sa_id_t * ike_sa_id = NULL;
+	FILE *fp = NULL;
+
+	error = sysinfo(&s_info);
+	if(error != 0)
+	{
+     		s_info.uptime = 0;
+	}
+
+	if(this)
+	{
+		ike_sa_id = this->ike_sa->get_id(this->ike_sa);
+
+		if(ike_sa_id)
+		{
+			initiator_spi = ike_sa_id->get_initiator_spi(ike_sa_id);
+		}
+	}
+	sprintf(err_data, "%d,%d,%lx,%d,%s,%lx",
+	     	   (unsigned int)time(NULL), 
+	     	   (unsigned int )s_info.uptime,
+	     	   htonl(notify->get_spi(notify)),
+	     	   type,
+		   this->ike_sa->get_name(this->ike_sa),
+		   initiator_spi);
+
+	fp = fopen(ESP_ERROR_LOG_FILE , "a");
+	if(fp)
+	{
+		fputs(err_data, fp);
+		fclose(fp);
+	}
+}
+
 METHOD(task_t, process_r, status_t,
 	private_informational_t *this, message_t *message)
 {
@@ -132,6 +189,7 @@ METHOD(task_t, process_r, status_t,
 				{
 					DBG1(DBG_IKE, "received %N error notify",
 						 notify_type_names, type);
+                                        log_esp_err(this,notify, type);
 					if (this->ike_sa->get_state(this->ike_sa) == IKE_CONNECTING)
 					{	/* only critical during main mode */
 						status = FAILED;
